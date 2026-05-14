@@ -44,7 +44,10 @@ COPY ingest/ ./ingest/
 COPY catalog/ ./catalog/
 
 # Hugging Face Spaces convention: app listens on $PORT (default 7860).
+# PYTHONPATH=/app makes `from server.foo import ...` resolve when Chainlit
+# loads server/app.py as a script (bypassing the usual package machinery).
 ENV PORT=7860 \
+    PYTHONPATH=/app \
     CATALOG_DIR=/app/catalog \
     COUNTRY_DATA_DIR=/app/Country\ Data
 

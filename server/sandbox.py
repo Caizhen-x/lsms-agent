@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 from IPython.core.interactiveshell import InteractiveShell  # noqa: E402
 
-from .config import (  # noqa: E402
+from server.config import (  # noqa: E402
     COUNTRY_DATA_DIR,
     PARQUET_DIR,
     SANDBOX_TIMEOUT_SEC,

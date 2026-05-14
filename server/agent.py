@@ -11,9 +11,9 @@ from typing import Any, Awaitable, Callable
 
 import anthropic
 
-from .config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, MAX_TOOL_TURNS
-from .sandbox import PythonSandbox
-from .tools import TOOL_SCHEMAS, dispatch
+from server.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, MAX_TOOL_TURNS
+from server.sandbox import PythonSandbox
+from server.tools import TOOL_SCHEMAS, dispatch
 
 SYSTEM_PROMPT = """You are LSMS-Agent, a data analyst for a research group that works with LSMS-ISA household survey data for 8 African countries: Burkina Faso, Ethiopia, Malawi, Mali, Niger, Nigeria, Tanzania, Uganda.
 

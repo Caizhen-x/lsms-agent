@@ -12,8 +12,8 @@ from typing import Any
 
 import pandas as pd
 
-from .config import PARQUET_DIR, VARIABLES_PARQUET
-from .sandbox import PythonSandbox
+from server.config import PARQUET_DIR, VARIABLES_PARQUET
+from server.sandbox import PythonSandbox
 
 
 # ---- Schemas -----------------------------------------------------------------

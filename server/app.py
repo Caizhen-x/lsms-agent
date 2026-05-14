@@ -5,9 +5,9 @@ import json
 
 import chainlit as cl
 
-from .agent import AgentCallbacks, make_client, run_turn
-from .config import GROUP_PASSWORD
-from .sandbox import PythonSandbox
+from server.agent import AgentCallbacks, make_client, run_turn
+from server.config import GROUP_PASSWORD
+from server.sandbox import PythonSandbox
 
 
 @cl.password_auth_callback
