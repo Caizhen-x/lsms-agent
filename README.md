@@ -1,5 +1,9 @@
 # LSMS Agent
 
+🚀 **Live app:** <https://xcz1234-lsms-agent.hf.space> · 🌐 **Landing page:** <https://caizhen-x.github.io/lsms-agent/>
+
+(Access is gated by a shared group password — ask the maintainer.)
+
 Natural-language analysis agent over LSMS-ISA survey data for 8 African countries (Burkina Faso, Ethiopia, Malawi, Mali, Niger, Nigeria, Tanzania, Uganda).
 
 Ask in plain English — "find education variables in Tanzania W2", "merge Tanzania W2 and W3 on `hhid`", "regress consumption on education in Uganda 2010" — and the agent searches the variable catalog, writes Python, and returns tables / plots.
