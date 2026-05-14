@@ -10,6 +10,10 @@ See `LSMS Automation - Architecture Plan.md` for the full design.
 
 **v0 walking skeleton.** All 8 countries ingested. Keyword variable search. Run-Python sandbox in chat. Questionnaire retrieval and merge helpers are deferred.
 
+## Deployment
+
+The chat app runs on Hugging Face Spaces (Docker). Landing page is on GitHub Pages. See [DEPLOY.md](./DEPLOY.md) for the one-time setup steps.
+
 ## Setup
 
 ```bash

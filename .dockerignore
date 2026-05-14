@@ -1,0 +1,31 @@
+.git/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+.env
+.env.local
+*.key
+
+# 6 GB of raw downloads — never push.  We only need the catalog/ output.
+Country Data/
+
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local Chainlit state
+.chainlit/
+.files/
+chainlit.md
+
+# Build outputs we don't need at runtime
+docs/
+DEPLOY.md
+LSMS\ Automation\ -\ Architecture\ Plan.md
