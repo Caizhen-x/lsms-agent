@@ -31,8 +31,11 @@ TOOL_SCHEMAS: list[dict] = [
         "name": "list_modules",
         "description": (
             "List the data modules (files) available for one country+round. "
-            "Returns module filenames and row counts.  Use to discover what data exists "
-            "before loading it."
+            "Returns the relative `module_path` (use this verbatim with load_module), "
+            "a `module_file` basename for readability, and the variable count.  Two "
+            "different module_paths can share a basename (e.g. Malawi 2010_IHS3 has "
+            "both Panel/Agriculture/ag_mod_n.dta and Full_Sample/Agriculture/ag_mod_n.dta) "
+            "— always disambiguate by module_path."
         ),
         "input_schema": {
             "type": "object",
@@ -49,7 +52,7 @@ TOOL_SCHEMAS: list[dict] = [
         "description": (
             "Substring/keyword search over the variable catalog. Matches against variable "
             "names AND labels (case-insensitive).  Filter by country and/or round to narrow. "
-            "Use this to find which module contains a concept like 'education', 'consumption', etc."
+            "Each hit includes the relative `module_path` — pass that verbatim to load_module."
         ),
         "input_schema": {
             "type": "object",
@@ -68,7 +71,9 @@ TOOL_SCHEMAS: list[dict] = [
         "description": (
             "Execute Python code in the session sandbox.  State persists across calls. "
             "Pre-imported: pandas (pd), numpy (np), matplotlib.pyplot (plt), seaborn (sns). "
-            "Helpers: load_module(country, round, module_file) returns a DataFrame. "
+            "Helper: load_module(country, round, module_path) returns a pandas DataFrame; "
+            "`module_path` MUST be the path returned by list_modules / search_variables, "
+            "not just a basename — basenames are ambiguous in some rounds. "
             "Use print() to surface results.  Plots created with plt are captured automatically. "
             "Timeout: 60s per call."
         ),
@@ -95,11 +100,11 @@ def _catalog() -> pd.DataFrame:
 
 @lru_cache(maxsize=1)
 def _inventory() -> dict[str, dict[str, list[str]]]:
-    """{country: {round: [module_file, ...]}}"""
+    """{country: {round: [module_path, ...]}}"""
     df = _catalog()
     out: dict[str, dict[str, list[str]]] = {}
     for (country, rnd), grp in df.groupby(["country", "round"]):
-        out.setdefault(country, {})[rnd] = sorted(grp["module_file"].unique().tolist())
+        out.setdefault(country, {})[rnd] = sorted(grp["module_path"].unique().tolist())
     return out
 
 
@@ -123,10 +128,13 @@ def list_modules(country: str, round: str) -> dict:
     df = _catalog()
     sub = df[(df["country"] == country) & (df["round"] == round)]
     modules = (
-        sub.groupby("module_file")
-        .agg(n_variables=("var_name", "count"))
+        sub.groupby("module_path")
+        .agg(
+            module_file=("module_file", "first"),
+            n_variables=("var_name", "count"),
+        )
         .reset_index()
-        .sort_values("module_file")
+        .sort_values("module_path")
         .to_dict(orient="records")
     )
     return {"country": country, "round": round, "modules": modules}
@@ -149,7 +157,7 @@ def search_variables(query: str, country: str | None = None, round: str | None =
         mask &= blob.str.contains(t, regex=False, na=False)
     hits = df[mask].head(limit)
 
-    rows = hits[["country", "round", "module_file", "var_name", "label", "dtype"]].to_dict(orient="records")
+    rows = hits[["country", "round", "module_path", "module_file", "var_name", "label", "dtype"]].to_dict(orient="records")
     # Attach value labels for the top hits only (saves tokens).
     for i, r in enumerate(rows):
         if i < 5:

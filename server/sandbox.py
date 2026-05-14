@@ -45,29 +45,44 @@ DATA_DIR = Path(os.environ["LSMS_DATA_DIR"])          # raw Country Data/
 PARQUET_DIR = Path(os.environ["LSMS_PARQUET_DIR"])    # converted parquet mirror
 VARIABLES_PARQUET = Path(os.environ["LSMS_VARIABLES_PARQUET"])
 
-def load_module(country: str, round_key: str, module_file: str) -> pd.DataFrame:
-    \"\"\"Load a parquet module by (country, round, module_file).
+def load_module(country: str, round_key: str, module_path: str) -> pd.DataFrame:
+    \"\"\"Load a parquet module by (country, round, module_path).
 
-    `module_file` matches the original raw filename (e.g. 'SEC_2A.dta', 'hh_sec_b.dta',
-    or 'consumption_aggregate/IHS4 Consumption Aggregate.csv').  We search the parquet
-    mirror for a matching filename.
+    `module_path` MUST be the relative path returned by list_modules() or
+    search_variables() — for example:
+        'SEC_2A.dta'                                    (Tanzania W1)
+        'Panel/Agriculture/ag_mod_n.dta'                (Malawi 2010 IHS3)
+        'consumption_aggregate/IHS4 Consumption Aggregate.csv'   (Malawi 2016)
+
+    Resolved unambiguously: extension is swapped to .parquet and the file is
+    looked up directly under the round's parquet directory.  Basenames are
+    NOT unique across rounds (e.g. Malawi 2010 IHS3 has both a Panel and a
+    Full_Sample version of every ag_mod_*.dta), so passing only a filename
+    is rejected when ambiguous.
     \"\"\"
     base = PARQUET_DIR / country / round_key
     if not base.is_dir():
         raise FileNotFoundError(f"no parquet for {country}/{round_key}; run `make ingest`")
-    target_stem = Path(module_file).stem
+
+    rel = Path(module_path)
+    direct = base / rel.with_suffix('.parquet')
+    if direct.is_file():
+        return pd.read_parquet(direct)
+
+    # Fallback: caller passed a bare filename.  Allowed ONLY if unambiguous.
+    target_stem = rel.stem
     candidates = [p for p in base.rglob('*.parquet') if p.stem == target_stem]
     if not candidates:
         raise FileNotFoundError(
-            f"no parquet matching '{module_file}' under {base}. "
-            f"Try search_variables() to find the right module."
+            f"no module at '{module_path}' under {base}. "
+            f"Use list_modules() to see exact module_paths."
         )
     if len(candidates) > 1:
-        # Prefer the candidate whose full relative path matches.
-        for c in candidates:
-            rel = str(c.relative_to(base).with_suffix(''))
-            if rel.endswith(Path(module_file).with_suffix('').as_posix()):
-                return pd.read_parquet(c)
+        rels = sorted(str(c.relative_to(base).with_suffix('')) for c in candidates)
+        raise ValueError(
+            f"module_path '{module_path}' is ambiguous in {country}/{round_key}: "
+            f"{len(candidates)} candidates {rels}. Pass the full module_path."
+        )
     return pd.read_parquet(candidates[0])
 """
 

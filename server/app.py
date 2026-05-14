@@ -10,11 +10,19 @@ from server.config import GROUP_PASSWORD
 from server.sandbox import PythonSandbox
 
 
+# Fail closed: refuse to boot if no password is configured.  Previously had a
+# dev-mode fallback that allowed anyone in when GROUP_PASSWORD was unset —
+# catastrophic if the secret is ever fat-fingered in deployment.
+if not GROUP_PASSWORD:
+    raise RuntimeError(
+        "GROUP_PASSWORD is not set.  Refusing to start: this would otherwise "
+        "expose an open chat to anyone with the URL.  Set the secret in your "
+        "deployment environment (HF Space settings -> Variables and secrets)."
+    )
+
+
 @cl.password_auth_callback
 def auth(username: str, password: str) -> cl.User | None:
-    if not GROUP_PASSWORD:
-        # If no password configured, allow anything (dev mode).  Print a warning at startup.
-        return cl.User(identifier=username or "dev", metadata={"role": "user"})
     if password == GROUP_PASSWORD:
         return cl.User(identifier=username or "researcher", metadata={"role": "user"})
     return None
