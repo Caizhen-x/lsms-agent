@@ -6,19 +6,21 @@ import os
 
 import chainlit as cl
 
-# Defence-in-depth for CHAINLIT_AUTH_SECRET: Chainlit reads this env var on
-# every JWT sign/verify (chainlit.auth.jwt.get_jwt_secret).  If we leave it in
-# os.environ, code running in the user-facing Python sandbox could read it and
-# forge session cookies that survive password rotation.
+# Defence-in-depth for CHAINLIT_AUTH_SECRET: Chainlit reads this env var during
+# startup and on every JWT sign/verify.  If we leave it in os.environ, code
+# running in the user-facing Python sandbox could read it and forge session
+# cookies that survive password rotation.
 #
 # Fix: capture it once, scrub the env, and monkey-patch get_jwt_secret to read
-# from our captured Python variable.  By this point chainlit's startup
-# ensure_jwt_secret() check has already passed, so the env value is no longer
-# needed anywhere else.
+# from our captured Python variable.  Chainlit imports get_jwt_secret into both
+# chainlit.auth and chainlit.auth.jwt, so patch both bindings before Chainlit's
+# startup ensure_jwt_secret() check runs.
+import chainlit.auth as _cl_auth  # noqa: E402
 import chainlit.auth.jwt as _cl_jwt  # noqa: E402
 
 _AUTH_SECRET = os.environ.pop("CHAINLIT_AUTH_SECRET", None)
 if _AUTH_SECRET:
+    _cl_auth.get_jwt_secret = lambda: _AUTH_SECRET  # type: ignore[assignment]
     _cl_jwt.get_jwt_secret = lambda: _AUTH_SECRET  # type: ignore[assignment]
 
 from server.agent import AgentCallbacks, make_client, run_turn  # noqa: E402

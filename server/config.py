@@ -25,7 +25,7 @@ MAX_TOOL_TURNS = int(os.getenv("MAX_TOOL_TURNS", "20"))
 # variables, scrub them from os.environ so that user-generated code running inside
 # the Python sandbox (server/sandbox.py) cannot read them via os.environ.
 # The anthropic SDK still receives ANTHROPIC_API_KEY because server/agent.py passes
-# it explicitly to Anthropic(api_key=...).  CHAINLIT_AUTH_SECRET is left in place
-# because Chainlit's cookie machinery reads it from env on each request.
+# it explicitly to Anthropic(api_key=...).  CHAINLIT_AUTH_SECRET is captured and
+# scrubbed in server/app.py because Chainlit needs it before this module imports.
 for _secret_env in ("ANTHROPIC_API_KEY", "GROUP_PASSWORD", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
     os.environ.pop(_secret_env, None)
