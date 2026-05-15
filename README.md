@@ -4,21 +4,135 @@
 
 (Access is gated by a shared group password — ask the maintainer.)
 
-Natural-language analysis agent over LSMS-ISA survey data for 8 African countries (Burkina Faso, Ethiopia, Malawi, Mali, Niger, Nigeria, Tanzania, Uganda).
+A natural-language analysis agent over **LSMS-ISA household survey data** for 8 African countries — Burkina Faso, Ethiopia, Malawi, Mali, Niger, Nigeria, Tanzania, Uganda. Ask in plain English; it searches the variable catalog, writes the Python, runs the analysis, and returns tables and plots.
 
-Ask in plain English — "find education variables in Tanzania W2", "merge Tanzania W2 and W3 on `hhid`", "regress consumption on education in Uganda 2010" — and the agent searches the variable catalog, writes Python, and returns tables / plots.
+---
 
-See `LSMS Automation - Architecture Plan.md` for the full design.
+## Why it exists
 
-## Status
+LSMS data is rich but painful to use. Every country names its variables differently. Every survey round restructures the modules. Questionnaires are scattered PDFs. Even *finding the right variable* before any analysis can eat an afternoon.
 
-**v0 walking skeleton.** All 8 countries ingested. Keyword variable search. Run-Python sandbox in chat. Questionnaire retrieval and merge helpers are deferred.
+This agent makes that workflow feel like a conversation. You ask about a concept ("years of schooling", "household food expenditure", "fertilizer use", "land area cultivated") and it tells you which module in which round of which country has the data — then loads it, transforms it, and runs whatever you asked for.
 
-## Deployment
+## What's in the catalog
 
-The chat app runs on Hugging Face Spaces (Docker). Landing page is on GitHub Pages. See [DEPLOY.md](./DEPLOY.md) for the one-time setup steps.
+Built from raw World Bank LSMS-ISA downloads via `make all-ingest`:
 
-## Setup
+| | Count |
+|---|---:|
+| Countries | **8** |
+| Survey rounds | **31** |
+| Data modules (Stata + CSV) | **2,712** |
+| Variables indexed (with labels & value-labels where present) | **76,775** |
+| Parquet footprint at runtime | ~417 MB |
+
+Per-country round coverage:
+
+| Country | Rounds |
+|---|---|
+| Burkina Faso | 2014 EMC |
+| Ethiopia | 2011 ERSS W1, 2013 ESS W2, 2015 ESS W3, 2018 ESS W4 |
+| Malawi | 2004 IHS2, 2010 IHS3, 2010-2013 IHPS, 2016 IHS4 |
+| Mali | 2014 EACI, 2017 EACI |
+| Niger | 2011 ECVMA W1, 2014 ECVMA W2 |
+| Nigeria | 2010, 2012, 2015, 2018 GHS-Panel (W1–W4) |
+| Tanzania | 2008, 2010, 2012, 2014 NPS (W1–W4), 2019 NPS-SDD, 2020 NPS W5 |
+| Uganda | 2005, 2010, 2011, 2013, 2015, 2018, 2019 UNPS (W1–W7) |
+
+## What you can actually ask it
+
+### Variable discovery
+
+> *"Find every variable that captures years of schooling in Tanzania."*
+> *"What variables relate to food consumption in Malawi 2016?"*
+> *"Which Ugandan rounds have a fertilizer-use indicator?"*
+
+Returns hits across modules with the full variable name, label, value labels (where Stata-labelled), and the exact module path you can load.
+
+### Data exploration
+
+> *"Load the Tanzania 2010 W2 household module and show me `df.shape`, `df.dtypes`, and the first 5 rows."*
+> *"What's the distribution of household size in Uganda 2019? Mean, median, p10/p90, and a histogram."*
+> *"Show me a crosstab of urban/rural × education attainment in Ethiopia 2018."*
+
+The agent uses a Python sandbox with pandas / numpy / matplotlib / seaborn / statsmodels preloaded. State persists within a session, so you can iterate without reloading.
+
+### Panel construction (single country, across rounds)
+
+> *"Merge the Tanzania 2010 and 2012 household sections on `hhid` and report the panel balance: how many households appear in both waves vs. one wave only."*
+> *"Build a three-wave panel from Nigeria GHS-Panel W1, W2, W3 using individual IDs. Show me attrition between waves."*
+
+### Cross-country comparison
+
+> *"Compare mean household size across Tanzania 2014 and Uganda 2015. Are the differences statistically significant?"*
+> *"Plot the distribution of years of schooling for women aged 25–35 in Ethiopia 2018 vs Tanzania 2014."*
+
+### Regressions and modelling
+
+> *"Regress log per-capita consumption on years of schooling, household size, and urban/rural in Ethiopia 2018. Report coefficients with HC1-robust SEs."*
+> *"In Uganda 2019, estimate the relationship between farm plot size and self-reported food security. Use linearmodels for clustered SEs at the EA level."*
+
+### Plotting
+
+> *"Histogram of household consumption per capita, log scale, Malawi 2016."*
+> *"Scatter plot of plot area vs. yield for maize plots in Nigeria 2015, with a LOWESS smoother."*
+> *"Stacked bar of education attainment by gender across all Tanzania rounds."*
+
+Plots are rendered inline in the chat as PNGs.
+
+### Working without questionnaires (graceful degradation)
+
+Several rounds shipped as **CSV-only** from the World Bank and have no Stata labels (e.g. Tanzania W3 onward, Nigeria GHS-Panel, Malawi IHS4). For those modules, the agent only has column names — it'll say so honestly, peek at the data, and use the agent's domain knowledge to make sense of it.
+
+## How it works under the hood
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  Chainlit chat UI  (login-gated, runs on Hugging Face Spaces)  │
+└────────────────────────────────────────────────────────────────┘
+                              │
+            User prompt ──────▼──────  conversation history
+┌────────────────────────────────────────────────────────────────┐
+│  Claude Sonnet 4.6  +  system prompt  +  tool use loop         │
+│                                                                │
+│   tools available to the model:                                │
+│   ├─ list_countries_and_rounds()                               │
+│   ├─ list_modules(country, round)                              │
+│   ├─ search_variables(query, country?, round?)                 │
+│   └─ run_python(code)                                          │
+└────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+   ┌─────────────────────────────┐    ┌────────────────────────┐
+   │  variables.parquet          │    │  IPython sandbox       │
+   │  (76,775 rows)              │    │  per chat session;     │
+   │  one row per variable       │    │  pandas/np/matplotlib  │
+   │  per module per round       │    │  pre-loaded;           │
+   │  per country                │    │  60s/call timeout;     │
+   └─────────────────────────────┘    │  data mounted RO.      │
+                                      └────────────────────────┘
+                                                  │
+                                                  ▼
+                                      ┌────────────────────────┐
+                                      │ catalog/parquet/...    │
+                                      │ (per-country, per-round│
+                                      │  per-module .parquet)  │
+                                      └────────────────────────┘
+```
+
+1. **Ingest** (one-time, locally): `make all-ingest` walks `Country Data/`, converts every `.dta` and `.csv` to Parquet, and extracts variable labels / value labels into a single searchable catalog.
+2. **Chat** (live): each session gets a private Python sandbox + a fresh Claude conversation. The model decides what to search, what to load, and what code to run. Tool calls are rendered in collapsible steps so you can audit what happened.
+3. **Output**: plain prose answers, tables, and inline plots. The agent doesn't show its Python by default — your researchers see results, not code — but it's available behind the tool-step expanders if you want to verify.
+
+## Security model
+
+- Login: shared group password (HF Spaces secret).
+- Cookies: JWT signed with `CHAINLIT_AUTH_SECRET`, stored in a Python variable and scrubbed from `os.environ` so sandbox code can't read it.
+- Secrets: `ANTHROPIC_API_KEY` / `GROUP_PASSWORD` / HF tokens are captured at startup then deleted from `os.environ`. The anthropic SDK still gets the key (passed explicitly), but `os.environ` inspection from inside the sandbox returns nothing useful.
+- Fail-closed: if `GROUP_PASSWORD` is unset at boot, the app refuses to start (no accidental open-door).
+- **Trust model**: this is for a known internal research group. The sandbox is *not* hardened against hostile users — anyone with the password can run arbitrary Python against the data. See `Roadmap` for the planned subprocess-isolation upgrade.
+
+## Setup (self-hosters)
 
 ```bash
 # 1. Install deps
@@ -28,18 +142,20 @@ make install
 cp .env.example .env
 # edit .env: set ANTHROPIC_API_KEY and GROUP_PASSWORD
 
-# 3. Put the LSMS data in ./Country Data/ (see "Data layout" below).  Not committed.
+# 3. Put the LSMS data in ./Country Data/ (see Data layout below).  Not committed.
 
-# 4. One-time ingest: convert .dta/.csv -> parquet, build variable catalog
+# 4. One-time ingest: convert .dta/.csv -> parquet, build variable catalog.
 make all-ingest
 
 # 5. Run the chat app
 make run    # opens http://localhost:8000
 ```
 
+For Hugging Face Spaces deployment (the live URL above), see [`DEPLOY.md`](./DEPLOY.md).
+
 ## Data layout
 
-The repo expects `Country Data/` next to this README, organized by reorganize.py:
+`Country Data/` lives next to this README and is structured by `scripts/reorganize.py`:
 
 ```
 Country Data/
@@ -54,35 +170,52 @@ Country Data/
 └── Uganda/{2005_UNPS_W1, 2010_UNPS_W2, 2011_UNPS_W3, 2013_UNPS_W4, 2015_UNPS_W5, 2018_UNPS_W6, 2019_UNPS_W7}/{data,refs}/
 ```
 
-Round key format: `YYYY_<SURVEY>_W<n>` (Wn omitted for single-round countries).
+Round-key format: `YYYY_<SURVEY>_W<n>` (Wn omitted for single-round countries).
 
-If you need to re-create this layout from a fresh download, run `python scripts/reorganize.py`.
+## Status & honest limits
 
-## Architecture (v0)
+**v0 walking skeleton.** What works today:
 
-- **LLM**: Claude Sonnet 4.6 via Anthropic SDK, tool use, prompt caching on system+tools.
-- **UI**: Chainlit (Python, chat-first, renders tables/figures natively).
-- **Auth**: single shared group password.
-- **Storage**: Parquet files under `catalog/parquet/<country>/<round>/`. Variable catalog at `catalog/variables.parquet`.
-- **Sandbox**: in-process IPython kernel per chat session, 60s per-call timeout, `Country Data/` mounted read-only via env var `LSMS_DATA_DIR`. Trusted users only — this is not a hostile-input sandbox.
+- ✅ All 8 ISA countries ingested into a single catalog
+- ✅ Keyword variable search over names + labels
+- ✅ Python sandbox with state persistence within a session
+- ✅ Login gating, fail-closed auth, env-scrubbed secrets
+- ✅ Disambiguated module paths (resolves Malawi 2010 IHS3 Panel/ vs Full_Sample/ collisions correctly)
 
-### Tools the agent has
+What's missing or rough:
 
-| Tool | Purpose |
-|---|---|
-| `list_countries_and_rounds` | Inventory of what's available |
-| `list_modules(country, round)` | What data files exist in a round |
-| `search_variables(query, country?, round?)` | Substring/keyword search over variable names + labels |
-| `run_python(code)` | Execute Python in the session kernel — pandas, numpy, statsmodels, matplotlib preloaded |
+- ❌ Questionnaire / PDF retrieval — the agent has no access to the survey PDFs yet, so questions about "what does this variable code mean" rely on Stata value labels only.
+- ❌ Semantic / vector search over variables (currently keyword-only).
+- ❌ Pre-built crosswalks across rounds — every panel merge is reasoned from scratch each time.
+- ❌ Real per-session sandbox isolation — current sandbox is in-process IPython, sufficient for trusted users only.
+- ❌ A handful of reference PDFs (Tanzania W3/W4/SDD/W5, Niger W2, Nigeria W2) are missing due to interrupted downloads; this affects depth of agent reasoning for those rounds. See `Country Data/_missing_references_checklist.md` if rebuilding the data tree.
 
-## Deferred (not in v0)
+## Roadmap
 
-- Questionnaire / PDF retrieval (`search_docs`)
-- Vector / semantic search over variables
-- Merge crosswalks across rounds
-- Cloud deployment
-- Multi-user / per-user history
+Next, in priority order:
+
+1. **Per-session subprocess sandbox** — kill-on-timeout, true session isolation, no shared state across users.
+2. **Questionnaire indexing** — `pymupdf` + vector store, exposed as a `search_docs` tool so the agent can quote the survey question that generated a variable.
+3. **Vector search over variables** — semantic match on labels, not just substring (Voyage `voyage-3-large` embeddings).
+4. **Crosswalk recipes** — accumulated mappings between equivalent variables across rounds/countries.
+5. **Result export** — download chat outputs (tables, plots, the generated Python) as a notebook.
+
+## Tools the agent has (technical reference)
+
+| Tool | Signature | What it returns |
+|---|---|---|
+| `list_countries_and_rounds` | `()` | Per-country list of round keys + module counts. |
+| `list_modules` | `(country, round)` | Per-module `module_path`, `module_file`, `n_variables`. |
+| `search_variables` | `(query, country?, round?, limit=30)` | Hits with `module_path`, `var_name`, `label`, value labels for top-5. |
+| `run_python` | `(code)` | `stdout`, `stderr`, `n_figures`. Figures returned out-of-band and rendered inline. |
 
 ## License
 
-Internal research group use only.
+Code: internal research-group use only.
+Data: distributed under the World Bank LSMS-ISA data use agreement; not committed to this repo.
+
+## Acknowledgements
+
+Data: [World Bank LSMS-ISA](https://www.worldbank.org/en/programs/lsms/initiatives/lsms-ISA).
+Model: Anthropic Claude Sonnet 4.6.
+Stack: Chainlit, FastAPI, pandas, Anthropic SDK.

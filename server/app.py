@@ -2,12 +2,28 @@
 from __future__ import annotations
 
 import json
+import os
 
 import chainlit as cl
 
-from server.agent import AgentCallbacks, make_client, run_turn
-from server.config import GROUP_PASSWORD
-from server.sandbox import PythonSandbox
+# Defence-in-depth for CHAINLIT_AUTH_SECRET: Chainlit reads this env var on
+# every JWT sign/verify (chainlit.auth.jwt.get_jwt_secret).  If we leave it in
+# os.environ, code running in the user-facing Python sandbox could read it and
+# forge session cookies that survive password rotation.
+#
+# Fix: capture it once, scrub the env, and monkey-patch get_jwt_secret to read
+# from our captured Python variable.  By this point chainlit's startup
+# ensure_jwt_secret() check has already passed, so the env value is no longer
+# needed anywhere else.
+import chainlit.auth.jwt as _cl_jwt  # noqa: E402
+
+_AUTH_SECRET = os.environ.pop("CHAINLIT_AUTH_SECRET", None)
+if _AUTH_SECRET:
+    _cl_jwt.get_jwt_secret = lambda: _AUTH_SECRET  # type: ignore[assignment]
+
+from server.agent import AgentCallbacks, make_client, run_turn  # noqa: E402
+from server.config import GROUP_PASSWORD  # noqa: E402
+from server.sandbox import PythonSandbox  # noqa: E402
 
 
 # Fail closed: refuse to boot if no password is configured.  Previously had a
