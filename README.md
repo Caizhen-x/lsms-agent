@@ -1,8 +1,8 @@
 # LSMS Agent
 
-🚀 **Live app:** <https://xcz1234-lsms-agent.hf.space> · 🌐 **Landing page:** <https://caizhen-x.github.io/lsms-agent/>
+🚀 **Live app:** <https://xcz1234-lsms-agent.hf.space> *(private Hugging Face Space)* · 🌐 **Landing page:** <https://caizhen-x.github.io/lsms-agent/>
 
-(Access is gated by a shared group password — ask the maintainer.)
+Access requires both **(1)** a Hugging Face account that has been granted access to the Space by the maintainer, **and (2)** the shared group password. Reach out to the maintainer for either.
 
 A natural-language analysis agent over **LSMS-ISA household survey data** for 8 African countries — Burkina Faso, Ethiopia, Malawi, Mali, Niger, Nigeria, Tanzania, Uganda. Ask in plain English; it searches the variable catalog, writes the Python, runs the analysis, and returns tables and plots.
 
@@ -175,27 +175,30 @@ Round-key format: `YYYY_<SURVEY>_W<n>` (Wn omitted for single-round countries).
 
 ## Status & honest limits
 
-**v0 walking skeleton.** What works today:
+What works today:
 
-- ✅ All 8 ISA countries ingested into a single catalog
+- ✅ All 8 ISA countries ingested into a single catalog (76,775 variables across 30 rounds, 2,712 modules)
 - ✅ Keyword variable search over names + labels
-- ✅ Subprocess Python sandbox with state persistence within a session and kill-on-timeout reset
-- ✅ Login gating, fail-closed auth, env-scrubbed secrets
+- ✅ Subprocess-per-session Python sandbox with kill-on-timeout, scrubbed env, and `pd.read_parquet` locked to the policy-checked `load_module` path
+- ✅ Default-block on geo/GPS/coordinate/tracking modules and on sensitive column names (lat/lon/phone/email/address/name etc.); opt in with `ALLOW_SENSITIVE_MODULES=true` only after confirming data-use terms
+- ✅ Output caps on `run_python` (capped stdout/stderr with truncation marker, max 4 figures per call)
+- ✅ Login gating, fail-closed auth, env-scrubbed secrets (incl. `CHAINLIT_AUTH_SECRET`), import-blocked network libraries in the sandbox
 - ✅ Disambiguated module paths (resolves Malawi 2010 IHS3 Panel/ vs Full_Sample/ collisions correctly)
+- ✅ Hugging Face Space deployed as **Private** so the committed parquet files are not publicly downloadable
 
 What's missing or rough:
 
 - ❌ Questionnaire / PDF retrieval — the agent has no access to the survey PDFs yet, so questions about "what does this variable code mean" rely on Stata value labels only.
 - ❌ Semantic / vector search over variables (currently keyword-only).
 - ❌ Pre-built crosswalks across rounds — every panel merge is reasoned from scratch each time.
-- ❌ Public-HF-repo data exposure if the Space remains public — app login does not protect files committed to the Space repo.
+- ❌ Per-user identity / audit log / rate limit — the only auth layer is the shared group password. A leaked password can't be revoked per-user, and there's no record of who asked what.
 - ❌ A handful of reference PDFs (Tanzania W3/W4/SDD/W5, Niger W2, Nigeria W2) are missing due to interrupted downloads; this affects depth of agent reasoning for those rounds. See `Country Data/_missing_references_checklist.md` if rebuilding the data tree.
 
 ## Roadmap
 
 Next, in priority order:
 
-1. **Private deployment / data-side policy** — make the HF Space private, or stop committing parquet files to a public Space repo.
+1. **Per-user identity / audit log / rate limit** — minimum: log `{ts, user, prompt_first_80}` to a JSONL on each turn so we have accountability. Stretch: HF OAuth so each researcher logs in as themselves and a leaked credential can be revoked individually.
 2. **Questionnaire indexing** — `pymupdf` + vector store, exposed as a `search_docs` tool so the agent can quote the survey question that generated a variable.
 3. **Vector search over variables** — semantic match on labels, not just substring (Voyage `voyage-3-large` embeddings).
 4. **Crosswalk recipes** — accumulated mappings between equivalent variables across rounds/countries.
@@ -206,9 +209,9 @@ Next, in priority order:
 | Tool | Signature | What it returns |
 |---|---|---|
 | `list_countries_and_rounds` | `()` | Per-country list of round keys + module counts. |
-| `list_modules` | `(country, round)` | Per-module `module_path`, `module_file`, `n_variables`. |
-| `search_variables` | `(query, country?, round?, limit=30)` | Hits with `module_path`, `var_name`, `label`, value labels for top-5. |
-| `run_python` | `(code)` | `stdout`, `stderr`, `n_figures`. Figures returned out-of-band and rendered inline. |
+| `list_modules` | `(country, round)` | Per-module `module_path`, `module_file`, `n_variables`. Sensitive modules (geo/GPS/coordinate/tracking) are filtered out and counted under `sensitive_modules_hidden` unless `ALLOW_SENSITIVE_MODULES=true`. |
+| `search_variables` | `(query, country?, round?, limit=30)` | Hits with `module_path`, `var_name`, `label`, value labels for top-5. Hits inside sensitive modules are filtered and counted under `n_sensitive_hidden`. |
+| `run_python` | `(code)` | `stdout`, `stderr`, truncation flags, `figures`, `error`, `worker_restarted`. Runs in a per-session subprocess; timeouts kill the worker via `proc.kill()` and the next call boots a fresh one. Output is capped (default 4,000 chars stdout, 2,000 chars stderr, 4 figures). `pd.read_parquet` is replaced by `load_module(country, round, module_path)` — the agent cannot bypass the data policy by reading parquet directly. |
 
 ## License
 
