@@ -15,7 +15,7 @@ Estimated time: **10–15 minutes**. You do this once. After that, updates are `
 2. **Space name**: `lsms-agent` (or whatever you like).
 3. **License**: choose what you want (`mit` is fine).
 4. **SDK**: select **Docker** → **Blank** template.
-5. **Visibility**: pick **Public** (you said you want this) or **Private** if you'd rather start gated.
+5. **Visibility**: pick **Private** for group use. App login protects the chat UI, but files committed to a public HF Space repo are directly downloadable from Hugging Face.
 6. **Hardware**: free CPU tier (`cpu-basic`, 2 vCPU / 16 GB) is plenty for v0.
 7. Click **Create Space**.
 
@@ -30,7 +30,7 @@ cd hf-lsms
 
 # Copy everything from this repo EXCEPT raw data + .git
 rsync -av --exclude='.git' --exclude='Country Data/' --exclude='.venv/' \
-    "/Users/xiongcaizhen/Desktop/LSMS Automation/" ./
+    "/path/to/LSMS Automation/" ./
 
 # Tell git-lfs to track the parquet files (HF gives you LFS for free)
 git lfs install
@@ -71,6 +71,12 @@ The app needs three secrets. Go to your Space → **Settings** → **Variables a
 
 Click **Save** for each. HF will restart the Space.
 
+Optional variable:
+
+| Name | Value | Notes |
+|---|---|---|
+| `ALLOW_SENSITIVE_MODULES` | `false` | Keep false unless the Space is private and your data-use terms allow geovariable/tracking access. |
+
 ## Step 4 — Verify
 
 - Watch the **Logs** tab on your Space. The build should finish in 3–5 min. Look for `Your app is available at http://0.0.0.0:7860`.
@@ -83,7 +89,7 @@ Click **Save** for each. HF will restart the Space.
 The repo has a `docs/index.html` landing page. Edit it once you know the Space URL:
 
 ```bash
-# In /Users/xiongcaizhen/Desktop/LSMS Automation/
+# In your local LSMS Automation repo:
 # Open docs/index.html and replace OPEN-APP-PLACEHOLDER-URL with your real HF URL.
 # Then:
 git add docs/index.html

@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from server.config import PARQUET_DIR, VARIABLES_PARQUET
+from server.data_policy import ALLOW_SENSITIVE_MODULES, sensitive_module_reason, visible_module
 from server.sandbox import PythonSandbox
 
 
@@ -35,7 +36,8 @@ TOOL_SCHEMAS: list[dict] = [
             "a `module_file` basename for readability, and the variable count.  Two "
             "different module_paths can share a basename (e.g. Malawi 2010_IHS3 has "
             "both Panel/Agriculture/ag_mod_n.dta and Full_Sample/Agriculture/ag_mod_n.dta) "
-            "— always disambiguate by module_path."
+            "— always disambiguate by module_path. Sensitive geo/tracking modules are "
+            "hidden unless the deployment explicitly enables them."
         ),
         "input_schema": {
             "type": "object",
@@ -52,7 +54,8 @@ TOOL_SCHEMAS: list[dict] = [
         "description": (
             "Substring/keyword search over the variable catalog. Matches against variable "
             "names AND labels (case-insensitive).  Filter by country and/or round to narrow. "
-            "Each hit includes the relative `module_path` — pass that verbatim to load_module."
+            "Each hit includes the relative `module_path` — pass that verbatim to load_module. "
+            "Sensitive geo/tracking modules are hidden unless the deployment explicitly enables them."
         ),
         "input_schema": {
             "type": "object",
@@ -75,6 +78,7 @@ TOOL_SCHEMAS: list[dict] = [
             "`module_path` MUST be the path returned by list_modules / search_variables, "
             "not just a basename — basenames are ambiguous in some rounds. "
             "Use print() to surface results.  Plots created with plt are captured automatically. "
+            "Output is capped; do not print entire DataFrames or export raw rows. "
             "Timeout: 60s per call."
         ),
         "input_schema": {
@@ -127,6 +131,9 @@ def list_modules(country: str, round: str) -> dict:
         return {"error": f"unknown round '{round}' for {country}. Known: {sorted(inv[country].keys())}"}
     df = _catalog()
     sub = df[(df["country"] == country) & (df["round"] == round)]
+    all_module_paths = set(sub["module_path"].dropna().unique().tolist())
+    if not ALLOW_SENSITIVE_MODULES:
+        sub = sub[sub["module_path"].map(visible_module).astype(bool)]
     modules = (
         sub.groupby("module_path")
         .agg(
@@ -137,7 +144,14 @@ def list_modules(country: str, round: str) -> dict:
         .sort_values("module_path")
         .to_dict(orient="records")
     )
-    return {"country": country, "round": round, "modules": modules}
+    visible_paths = {m["module_path"] for m in modules}
+    hidden = sorted(all_module_paths - visible_paths)
+    return {
+        "country": country,
+        "round": round,
+        "modules": modules,
+        "sensitive_modules_hidden": len(hidden),
+    }
 
 
 def search_variables(query: str, country: str | None = None, round: str | None = None, limit: int = 30) -> dict:
@@ -155,7 +169,12 @@ def search_variables(query: str, country: str | None = None, round: str | None =
     mask = pd.Series(True, index=df.index)
     for t in terms:
         mask &= blob.str.contains(t, regex=False, na=False)
-    hits = df[mask].head(limit)
+    matched = df[mask]
+    sensitive_mask = matched["module_path"].map(lambda p: sensitive_module_reason(str(p)) is not None).astype(bool)
+    n_sensitive_hidden = int(sensitive_mask.sum()) if not ALLOW_SENSITIVE_MODULES else 0
+    if not ALLOW_SENSITIVE_MODULES:
+        matched = matched[~sensitive_mask]
+    hits = matched.head(limit)
 
     rows = hits[["country", "round", "module_path", "module_file", "var_name", "label", "dtype"]].to_dict(orient="records")
     # Attach value labels for the top hits only (saves tokens).
@@ -166,16 +185,26 @@ def search_variables(query: str, country: str | None = None, round: str | None =
                 r["value_labels"] = json.loads(vl) if vl else {}
             except Exception:
                 r["value_labels"] = {}
-    return {"hits": rows, "n_hits": int(mask.sum()), "showing": len(rows), "query": query}
+    return {
+        "hits": rows,
+        "n_hits": int(len(matched)),
+        "showing": len(rows),
+        "query": query,
+        "sensitive_hits_hidden": n_sensitive_hidden,
+    }
 
 
 def run_python(code: str, sandbox: PythonSandbox) -> dict[str, Any]:
     res = sandbox.run(code)
     payload: dict[str, Any] = {
-        "stdout": res.stdout[-8000:] if res.stdout else "",
-        "stderr": res.stderr[-4000:] if res.stderr else "",
+        "stdout": res.stdout if res.stdout else "",
+        "stderr": res.stderr if res.stderr else "",
         "n_figures": len(res.figures),
+        "stdout_truncated": res.stdout_truncated,
+        "stderr_truncated": res.stderr_truncated,
     }
+    if res.worker_restarted:
+        payload["worker_restarted"] = True
     if res.error:
         payload["error"] = res.error
     if res.timed_out:

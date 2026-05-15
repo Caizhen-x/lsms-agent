@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable
 
 import anthropic
 
-from server.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, MAX_TOOL_TURNS
+from server.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, MAX_TOOL_RESULT_CHARS, MAX_TOOL_TURNS
 from server.sandbox import PythonSandbox
 from server.tools import TOOL_SCHEMAS, dispatch
 
@@ -31,7 +31,7 @@ The user is a development economist or statistician.  They want answers about th
 1. Use `list_countries_and_rounds` if you need an overview.
 2. Use `search_variables` to find which module contains a concept.  Variable labels vary across countries and rounds, so try multiple keywords.
 3. Use `list_modules` if you need to see what data files exist for a round.
-4. Use `run_python` to actually load data and do analysis.  `load_module(country, round, module_path)` returns a pandas DataFrame.  `module_path` MUST be the value returned by list_modules / search_variables — basenames alone are ambiguous in some rounds (notably Malawi 2010 IHS3 has parallel Panel/ and Full_Sample/ trees with identical filenames).  State persists across `run_python` calls within a session.
+4. Use `run_python` to actually load data and do analysis.  `load_module(country, round, module_path)` returns a pandas DataFrame.  `module_path` MUST be the value returned by list_modules / search_variables — basenames alone are ambiguous in some rounds (notably Malawi 2010 IHS3 has parallel Panel/ and Full_Sample/ trees with identical filenames).  State persists across `run_python` calls within a session unless a timeout kills and resets that session's worker.
 5. When you finish, summarize the result in plain prose.  The user does NOT see your code by default — describe what you did and what you found.
 
 # Conventions
@@ -41,6 +41,8 @@ The user is a development economist or statistician.  They want answers about th
 - Variable labels in non-English-only rounds (Burkina Faso, Mali, Niger 2014) may be in French.
 - Several rounds are CSV-only (no Stata labels).  For those, you only have column names — be honest about uncertainty.
 - The sandbox's environment does NOT contain any project secrets (ANTHROPIC_API_KEY, GROUP_PASSWORD, etc.).  Don't try to read them; they were intentionally scrubbed at startup.
+- Sensitive geovariable, GPS, coordinate, and tracking modules are hidden/blocked unless the deployment explicitly enables them.  Do not try to bypass that policy.
+- `run_python` output is capped.  Print compact summaries (`df.shape`, `df.head()`, `describe()`, grouped tables), not entire raw DataFrames or row dumps.
 
 # Quality rules
 
@@ -113,7 +115,7 @@ async def run_turn(
             tool_results_content.append({
                 "type": "tool_result",
                 "tool_use_id": tu.id,
-                "content": json.dumps(result, default=str)[:60_000],  # hard cap to avoid runaway tokens
+                "content": json.dumps(result, default=str)[:MAX_TOOL_RESULT_CHARS],
             })
 
         history.append({"role": "user", "content": tool_results_content})

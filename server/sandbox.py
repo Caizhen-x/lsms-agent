@@ -1,161 +1,170 @@
-"""Per-session IPython sandbox for running agent-generated Python.
+"""Per-session subprocess sandbox for running agent-generated Python.
 
-Trust model: this is for the user's research group only.  We are NOT defending
-against malicious code — we ARE preventing simple foot-guns (long-running
-loops, blocking I/O) by enforcing a wall-clock timeout per call.
-
-Each chat session owns one PythonSandbox; state (variables, imports, loaded
-DataFrames) persists across calls within a session.
+Each chat session owns one worker process. State persists across calls within
+that session, but a timed-out call kills and replaces the worker.
 """
 from __future__ import annotations
 
-import contextlib
-import io
+import json
 import os
+import queue
+import subprocess
+import sys
 import threading
-import traceback
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-import matplotlib
-
-matplotlib.use("Agg")  # no display needed
-import matplotlib.pyplot as plt  # noqa: E402
-
-from IPython.core.interactiveshell import InteractiveShell  # noqa: E402
-
-from server.config import (  # noqa: E402
-    COUNTRY_DATA_DIR,
-    PARQUET_DIR,
-    SANDBOX_TIMEOUT_SEC,
-    VARIABLES_PARQUET,
-)
+from server.config import PARQUET_DIR, SANDBOX_TIMEOUT_SEC, VARIABLES_PARQUET
 
 
-SETUP_CODE = """
-import os, sys, json
-from pathlib import Path
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-DATA_DIR = Path(os.environ["LSMS_DATA_DIR"])          # raw Country Data/
-PARQUET_DIR = Path(os.environ["LSMS_PARQUET_DIR"])    # converted parquet mirror
-VARIABLES_PARQUET = Path(os.environ["LSMS_VARIABLES_PARQUET"])
-
-def load_module(country: str, round_key: str, module_path: str) -> pd.DataFrame:
-    \"\"\"Load a parquet module by (country, round, module_path).
-
-    `module_path` MUST be the relative path returned by list_modules() or
-    search_variables() — for example:
-        'SEC_2A.dta'                                    (Tanzania W1)
-        'Panel/Agriculture/ag_mod_n.dta'                (Malawi 2010 IHS3)
-        'consumption_aggregate/IHS4 Consumption Aggregate.csv'   (Malawi 2016)
-
-    Resolved unambiguously: extension is swapped to .parquet and the file is
-    looked up directly under the round's parquet directory.  Basenames are
-    NOT unique across rounds (e.g. Malawi 2010 IHS3 has both a Panel and a
-    Full_Sample version of every ag_mod_*.dta), so passing only a filename
-    is rejected when ambiguous.
-    \"\"\"
-    base = PARQUET_DIR / country / round_key
-    if not base.is_dir():
-        raise FileNotFoundError(f"no parquet for {country}/{round_key}; run `make ingest`")
-
-    rel = Path(module_path)
-    direct = base / rel.with_suffix('.parquet')
-    if direct.is_file():
-        return pd.read_parquet(direct)
-
-    # Fallback: caller passed a bare filename.  Allowed ONLY if unambiguous.
-    target_stem = rel.stem
-    candidates = [p for p in base.rglob('*.parquet') if p.stem == target_stem]
-    if not candidates:
-        raise FileNotFoundError(
-            f"no module at '{module_path}' under {base}. "
-            f"Use list_modules() to see exact module_paths."
-        )
-    if len(candidates) > 1:
-        rels = sorted(str(c.relative_to(base).with_suffix('')) for c in candidates)
-        raise ValueError(
-            f"module_path '{module_path}' is ambiguous in {country}/{round_key}: "
-            f"{len(candidates)} candidates {rels}. Pass the full module_path."
-        )
-    return pd.read_parquet(candidates[0])
-"""
+SECRET_ENV_NAMES = {
+    "ANTHROPIC_API_KEY",
+    "GROUP_PASSWORD",
+    "CHAINLIT_AUTH_SECRET",
+    "HF_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+}
 
 
 @dataclass
 class ExecResult:
     stdout: str
     stderr: str
-    figures: list[bytes] = field(default_factory=list)  # PNG bytes
+    figures: list[bytes] = field(default_factory=list)
     timed_out: bool = False
     error: str = ""
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    worker_restarted: bool = False
 
 
 class PythonSandbox:
-    """One IPython shell per chat session."""
+    """One subprocess-backed Python worker per chat session."""
 
     def __init__(self) -> None:
-        os.environ["LSMS_DATA_DIR"] = str(COUNTRY_DATA_DIR)
-        os.environ["LSMS_PARQUET_DIR"] = str(PARQUET_DIR)
-        os.environ["LSMS_VARIABLES_PARQUET"] = str(VARIABLES_PARQUET)
+        self.proc: subprocess.Popen[str] | None = None
+        self._needs_restart_notice = False
 
-        self.shell = InteractiveShell.instance()
-        # Run setup once so the agent has helpers in scope.
-        self._exec_silent(SETUP_CODE)
+    def _worker_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        for name in SECRET_ENV_NAMES:
+            env.pop(name, None)
+        env.update(
+            {
+                "LSMS_PARQUET_DIR": str(PARQUET_DIR),
+                "LSMS_VARIABLES_PARQUET": str(VARIABLES_PARQUET),
+                "PYTHONUNBUFFERED": "1",
+                "MPLCONFIGDIR": env.get("MPLCONFIGDIR", "/tmp/matplotlib"),
+            }
+        )
+        return env
 
-    def _exec_silent(self, code: str) -> None:
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            self.shell.run_cell(code, silent=True)
+    def _start_worker(self) -> None:
+        self.close()
+        self.proc = subprocess.Popen(
+            [sys.executable, "-m", "server.sandbox_worker"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+            env=self._worker_env(),
+        )
+
+    def _ensure_worker(self) -> subprocess.Popen[str]:
+        if self.proc is None or self.proc.poll() is not None:
+            self._start_worker()
+        assert self.proc is not None
+        return self.proc
+
+    def close(self) -> None:
+        if self.proc is None:
+            return
+        proc = self.proc
+        self.proc = None
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
     def run(self, code: str) -> ExecResult:
-        out_buf = io.StringIO()
-        err_buf = io.StringIO()
-        result_holder: dict[str, Any] = {}
+        proc = self._ensure_worker()
+        response_queue: queue.Queue[str | BaseException] = queue.Queue(maxsize=1)
+        restarted = self._needs_restart_notice
+        self._needs_restart_notice = False
 
-        def target() -> None:
+        def communicate() -> None:
             try:
-                plt.close("all")  # clean slate per call
-                with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
-                    cell_result = self.shell.run_cell(code, store_history=False)
-                result_holder["cell"] = cell_result
-            except Exception:
-                err_buf.write(traceback.format_exc())
+                if proc.stdin is None or proc.stdout is None:
+                    raise RuntimeError("sandbox worker pipes are closed")
+                proc.stdin.write(json.dumps({"code": code}) + "\n")
+                proc.stdin.flush()
+                line = proc.stdout.readline()
+                if not line:
+                    raise RuntimeError("sandbox worker exited without returning a result")
+                response_queue.put(line)
+            except BaseException as exc:  # noqa: BLE001 - crosses thread boundary
+                response_queue.put(exc)
 
-        t = threading.Thread(target=target, daemon=True)
+        t = threading.Thread(target=communicate, daemon=True)
         t.start()
         t.join(SANDBOX_TIMEOUT_SEC)
 
-        timed_out = t.is_alive()
-        # NOTE: we can't actually kill the thread; the agent will just see a timeout.
-        # Long-running computations will continue in the background until they finish.
-        # Acceptable for trusted-user prototype; revisit with subprocess isolation later.
+        if t.is_alive():
+            self.close()
+            self._needs_restart_notice = True
+            return ExecResult(
+                stdout="",
+                stderr="",
+                timed_out=True,
+                error=(
+                    f"Python execution exceeded {SANDBOX_TIMEOUT_SEC}s and the "
+                    "sandbox worker was killed. Session Python state was reset."
+                ),
+                worker_restarted=restarted,
+            )
 
-        figs: list[bytes] = []
-        if not timed_out:
-            for fnum in plt.get_fignums():
-                fig = plt.figure(fnum)
-                buf = io.BytesIO()
-                fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
-                figs.append(buf.getvalue())
-            plt.close("all")
+        item = response_queue.get()
+        if isinstance(item, BaseException):
+            self.close()
+            self._needs_restart_notice = True
+            return ExecResult(
+                stdout="",
+                stderr="",
+                error=f"{item.__class__.__name__}: {item}",
+                worker_restarted=restarted,
+            )
 
-        cell_result = result_holder.get("cell")
-        error = ""
-        if cell_result is not None and not cell_result.success:
-            if cell_result.error_in_exec is not None:
-                error = repr(cell_result.error_in_exec)
-            elif cell_result.error_before_exec is not None:
-                error = repr(cell_result.error_before_exec)
+        try:
+            payload: dict[str, Any] = json.loads(item)
+        except json.JSONDecodeError as exc:
+            self.close()
+            self._needs_restart_notice = True
+            return ExecResult(
+                stdout="",
+                stderr=item[:2000],
+                error=f"invalid sandbox worker response: {exc}",
+                worker_restarted=restarted,
+            )
+
+        figures: list[bytes] = []
+        raw_figures = payload.get("figures") or []
+        if raw_figures:
+            import base64
+
+            figures = [base64.b64decode(f) for f in raw_figures]
 
         return ExecResult(
-            stdout=out_buf.getvalue(),
-            stderr=err_buf.getvalue(),
-            figures=figs,
-            timed_out=timed_out,
-            error=error,
+            stdout=str(payload.get("stdout") or ""),
+            stderr=str(payload.get("stderr") or ""),
+            figures=figures,
+            error=str(payload.get("error") or ""),
+            stdout_truncated=bool(payload.get("stdout_truncated")),
+            stderr_truncated=bool(payload.get("stderr_truncated")),
+            worker_restarted=restarted,
         )
+
+    def __del__(self) -> None:
+        self.close()

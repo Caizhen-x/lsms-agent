@@ -20,20 +20,20 @@ WORKDIR /app
 # Install Python deps separately for better layer caching.
 COPY pyproject.toml ./
 RUN pip install --upgrade pip && pip install \
-    "anthropic>=0.40.0" \
-    "chainlit>=1.3.0" \
-    "pandas>=2.2" \
-    "pyarrow>=17.0" \
-    "pyreadstat>=1.2.7" \
-    "python-dotenv>=1.0" \
-    "ipython>=8.30" \
-    "matplotlib>=3.9" \
-    "seaborn>=0.13" \
-    "numpy>=2.0" \
-    "scipy>=1.13" \
-    "statsmodels>=0.14" \
-    "linearmodels>=6.0" \
-    "pypdf>=5.0"
+    "anthropic==0.102.0" \
+    "chainlit==2.11.0" \
+    "pandas==3.0.3" \
+    "pyarrow==24.0.0" \
+    "pyreadstat==1.3.4" \
+    "python-dotenv==1.2.2" \
+    "ipython==9.13.0" \
+    "matplotlib==3.10.9" \
+    "seaborn==0.13.2" \
+    "numpy==2.4.4" \
+    "scipy==1.17.1" \
+    "statsmodels==0.14.6" \
+    "linearmodels==7.0" \
+    "pypdf==6.11.0"
 
 # Application code
 COPY server/ ./server/

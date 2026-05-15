@@ -60,6 +60,22 @@ async def on_start() -> None:
     ).send()
 
 
+def _close_sandbox() -> None:
+    sandbox = cl.user_session.get("sandbox")
+    if sandbox is not None:
+        sandbox.close()
+
+
+@cl.on_chat_end
+async def on_chat_end() -> None:
+    _close_sandbox()
+
+
+@cl.on_stop
+async def on_stop() -> None:
+    _close_sandbox()
+
+
 class ChainlitCallbacks(AgentCallbacks):
     def __init__(self) -> None:
         self.text_msg: cl.Message | None = None

@@ -20,6 +20,9 @@ GROUP_PASSWORD = os.getenv("GROUP_PASSWORD", "")
 
 SANDBOX_TIMEOUT_SEC = int(os.getenv("SANDBOX_TIMEOUT_SEC", "60"))
 MAX_TOOL_TURNS = int(os.getenv("MAX_TOOL_TURNS", "20"))
+MAX_RUN_PYTHON_STDOUT_CHARS = int(os.getenv("MAX_RUN_PYTHON_STDOUT_CHARS", "4000"))
+MAX_RUN_PYTHON_STDERR_CHARS = int(os.getenv("MAX_RUN_PYTHON_STDERR_CHARS", "2000"))
+MAX_TOOL_RESULT_CHARS = int(os.getenv("MAX_TOOL_RESULT_CHARS", "12000"))
 
 # Defence-in-depth: once we've captured the secrets above into Python module-level
 # variables, scrub them from os.environ so that user-generated code running inside

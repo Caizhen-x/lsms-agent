@@ -21,7 +21,7 @@ Built from raw World Bank LSMS-ISA downloads via `make all-ingest`:
 | | Count |
 |---|---:|
 | Countries | **8** |
-| Survey rounds | **31** |
+| Survey rounds | **30** |
 | Data modules (Stata + CSV) | **2,712** |
 | Variables indexed (with labels & value-labels where present) | **76,775** |
 | Parquet footprint at runtime | ~417 MB |
@@ -55,7 +55,7 @@ Returns hits across modules with the full variable name, label, value labels (wh
 > *"What's the distribution of household size in Uganda 2019? Mean, median, p10/p90, and a histogram."*
 > *"Show me a crosstab of urban/rural × education attainment in Ethiopia 2018."*
 
-The agent uses a Python sandbox with pandas / numpy / matplotlib / seaborn / statsmodels preloaded. State persists within a session, so you can iterate without reloading.
+The agent uses a subprocess Python sandbox with pandas / numpy / matplotlib / seaborn / statsmodels preloaded. State persists within a session unless a timed-out call kills and resets that session's worker.
 
 ### Panel construction (single country, across rounds)
 
@@ -104,7 +104,7 @@ Several rounds shipped as **CSV-only** from the World Bank and have no Stata lab
                               │
                               ▼
    ┌─────────────────────────────┐    ┌────────────────────────┐
-   │  variables.parquet          │    │  IPython sandbox       │
+   │  variables.parquet          │    │  subprocess sandbox    │
    │  (76,775 rows)              │    │  per chat session;     │
    │  one row per variable       │    │  pandas/np/matplotlib  │
    │  per module per round       │    │  pre-loaded;           │
@@ -121,16 +121,17 @@ Several rounds shipped as **CSV-only** from the World Bank and have no Stata lab
 ```
 
 1. **Ingest** (one-time, locally): `make all-ingest` walks `Country Data/`, converts every `.dta` and `.csv` to Parquet, and extracts variable labels / value labels into a single searchable catalog.
-2. **Chat** (live): each session gets a private Python sandbox + a fresh Claude conversation. The model decides what to search, what to load, and what code to run. Tool calls are rendered in collapsible steps so you can audit what happened.
+2. **Chat** (live): each session gets a private subprocess Python sandbox + a fresh Claude conversation. The model decides what to search, what to load, and what code to run. Tool calls are rendered in collapsible steps so you can audit what happened.
 3. **Output**: plain prose answers, tables, and inline plots. The agent doesn't show its Python by default — your researchers see results, not code — but it's available behind the tool-step expanders if you want to verify.
 
 ## Security model
 
-- Login: shared group password (HF Spaces secret).
+- Login: shared group password (HF Spaces secret). This is suitable only for a known group; private Space visibility is recommended.
 - Cookies: JWT signed with `CHAINLIT_AUTH_SECRET`, stored in a Python variable and scrubbed from `os.environ` so sandbox code can't read it.
 - Secrets: `ANTHROPIC_API_KEY` / `GROUP_PASSWORD` / HF tokens are captured at startup then deleted from `os.environ`. The anthropic SDK still gets the key (passed explicitly), but `os.environ` inspection from inside the sandbox returns nothing useful.
 - Fail-closed: if `GROUP_PASSWORD` is unset at boot, the app refuses to start (no accidental open-door).
-- **Trust model**: this is for a known internal research group. The sandbox is *not* hardened against hostile users — anyone with the password can run arbitrary Python against the data. See `Roadmap` for the planned subprocess-isolation upgrade.
+- Sandbox: each chat session gets a subprocess worker, and timed-out code is killed with `proc.kill()`. `run_python` output is capped, and geovariable/GPS/coordinate/tracking modules are hidden and blocked unless `ALLOW_SENSITIVE_MODULES=true`.
+- **Trust model**: this is for a known internal research group. The sandbox has guardrails, but it is not a hostile-user containment boundary. If the HF Space is public, files committed to the Space repo can still be downloaded directly from Hugging Face, bypassing app login.
 
 ## Setup (self-hosters)
 
@@ -178,7 +179,7 @@ Round-key format: `YYYY_<SURVEY>_W<n>` (Wn omitted for single-round countries).
 
 - ✅ All 8 ISA countries ingested into a single catalog
 - ✅ Keyword variable search over names + labels
-- ✅ Python sandbox with state persistence within a session
+- ✅ Subprocess Python sandbox with state persistence within a session and kill-on-timeout reset
 - ✅ Login gating, fail-closed auth, env-scrubbed secrets
 - ✅ Disambiguated module paths (resolves Malawi 2010 IHS3 Panel/ vs Full_Sample/ collisions correctly)
 
@@ -187,14 +188,14 @@ What's missing or rough:
 - ❌ Questionnaire / PDF retrieval — the agent has no access to the survey PDFs yet, so questions about "what does this variable code mean" rely on Stata value labels only.
 - ❌ Semantic / vector search over variables (currently keyword-only).
 - ❌ Pre-built crosswalks across rounds — every panel merge is reasoned from scratch each time.
-- ❌ Real per-session sandbox isolation — current sandbox is in-process IPython, sufficient for trusted users only.
+- ❌ Public-HF-repo data exposure if the Space remains public — app login does not protect files committed to the Space repo.
 - ❌ A handful of reference PDFs (Tanzania W3/W4/SDD/W5, Niger W2, Nigeria W2) are missing due to interrupted downloads; this affects depth of agent reasoning for those rounds. See `Country Data/_missing_references_checklist.md` if rebuilding the data tree.
 
 ## Roadmap
 
 Next, in priority order:
 
-1. **Per-session subprocess sandbox** — kill-on-timeout, true session isolation, no shared state across users.
+1. **Private deployment / data-side policy** — make the HF Space private, or stop committing parquet files to a public Space repo.
 2. **Questionnaire indexing** — `pymupdf` + vector store, exposed as a `search_docs` tool so the agent can quote the survey question that generated a variable.
 3. **Vector search over variables** — semantic match on labels, not just substring (Voyage `voyage-3-large` embeddings).
 4. **Crosswalk recipes** — accumulated mappings between equivalent variables across rounds/countries.
