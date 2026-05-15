@@ -99,6 +99,9 @@ Several rounds shipped as **CSV-only** from the World Bank and have no Stata lab
 │   ├─ list_countries_and_rounds()                               │
 │   ├─ list_modules(country, round)                              │
 │   ├─ search_variables(query, country?, round?)                 │
+│   ├─ search_docs(query, country?, round?)                      │
+│   ├─ list_crosswalks(country)                                  │
+│   ├─ lookup_crosswalk(country, concept)                        │
 │   └─ run_python(code)                                          │
 └────────────────────────────────────────────────────────────────┘
                               │
@@ -179,6 +182,9 @@ What works today:
 
 - ✅ All 8 ISA countries ingested into a single catalog (76,775 variables across 30 rounds, 2,712 modules)
 - ✅ Keyword variable search over names + labels
+- ✅ **Questionnaire / PDF retrieval (`search_docs`)** — BM25 search over 266 reference PDFs (13,449 text chunks). The agent can now quote the actual survey question that defined a variable, for any country/round.
+- ✅ **Crosswalks (`list_crosswalks` / `lookup_crosswalk`)** — curated YAML files under `crosswalks/<country>/<concept>.yaml` map a concept (e.g. `household_id`, `years_of_schooling`) to per-round variable + module paths. Starts empty; accumulates as researchers add files. See [`crosswalks/README.md`](./crosswalks/README.md) for the format.
+- ✅ **Audit log + per-user rate limit** — every chat turn appends `{ts, user, prompt_head, tools}` to a JSONL audit file; per-user token bucket (default 30 turns/hour, 200/day) caps damage from a leaked password.
 - ✅ Subprocess-per-session Python sandbox with kill-on-timeout, scrubbed env, and `pd.read_parquet` locked to the policy-checked `load_module` path
 - ✅ Default-block on geo/GPS/coordinate/tracking modules and on sensitive column names (lat/lon/phone/email/address/name etc.); opt in with `ALLOW_SENSITIVE_MODULES=true` only after confirming data-use terms
 - ✅ Output caps on `run_python` (capped stdout/stderr with truncation marker, max 4 figures per call)
@@ -188,20 +194,19 @@ What works today:
 
 What's missing or rough:
 
-- ❌ Questionnaire / PDF retrieval — the agent has no access to the survey PDFs yet, so questions about "what does this variable code mean" rely on Stata value labels only.
-- ❌ Semantic / vector search over variables (currently keyword-only).
-- ❌ Pre-built crosswalks across rounds — every panel merge is reasoned from scratch each time.
-- ❌ Per-user identity / audit log / rate limit — the only auth layer is the shared group password. A leaked password can't be revoked per-user, and there's no record of who asked what.
-- ❌ A handful of reference PDFs (Tanzania W3/W4/SDD/W5, Niger W2, Nigeria W2) are missing due to interrupted downloads; this affects depth of agent reasoning for those rounds. See `Country Data/_missing_references_checklist.md` if rebuilding the data tree.
+- ❌ Semantic / vector search over variables — search is keyword-only.  With `search_docs` now indexing questionnaires, the marginal value of semantic variable search is lower than before; deferred until it bites.
+- ❌ Per-user identity via HF OAuth — the current audit log records whatever email a user typed into Chainlit; a leaked password still grants the same access level.  Rate limit + audit help, but they don't replace true per-user accounts.
+- ❌ Audit log durability — log is written to `/tmp` and lost on Space restart.  Acceptable for v0; point `AUDIT_LOG_PATH` at HF persistent storage for durability.
+- ❌ A handful of reference PDFs (Tanzania W3/W4/SDD/W5, Niger W2, Nigeria W2) are missing due to interrupted downloads.  Those rounds have reduced `search_docs` coverage.  See `Country Data/_missing_references_checklist.md` if rebuilding the data tree.
 
 ## Roadmap
 
 Next, in priority order:
 
-1. **Per-user identity / audit log / rate limit** — minimum: log `{ts, user, prompt_first_80}` to a JSONL on each turn so we have accountability. Stretch: HF OAuth so each researcher logs in as themselves and a leaked credential can be revoked individually.
-2. **Questionnaire indexing** — `pymupdf` + vector store, exposed as a `search_docs` tool so the agent can quote the survey question that generated a variable.
-3. **Vector search over variables** — semantic match on labels, not just substring (Voyage `voyage-3-large` embeddings).
-4. **Crosswalk recipes** — accumulated mappings between equivalent variables across rounds/countries.
+1. **Per-user identity via HF OAuth** — replace the shared password with `chainlit_oauth=huggingface` so each researcher logs in as themselves; revoke per-user when needed; the existing audit log automatically becomes more useful.
+2. **Vector search over variables** — semantic match on labels (Voyage `voyage-3-large` embeddings) for synonym handling. Lower priority now that `search_docs` covers the "what does this mean" question.
+3. **Auto-suggested crosswalks** — let the agent draft a YAML under `crosswalks/<country>/<concept>.yaml` and surface it for the user to approve / commit. Builds the crosswalk library passively as researchers use the tool.
+4. **Durable audit log** — point `AUDIT_LOG_PATH` at HF persistent storage; rotate weekly.
 5. **Result export** — download chat outputs (tables, plots, the generated Python) as a notebook.
 
 ## Tools the agent has (technical reference)
@@ -211,6 +216,9 @@ Next, in priority order:
 | `list_countries_and_rounds` | `()` | Per-country list of round keys + module counts. |
 | `list_modules` | `(country, round)` | Per-module `module_path`, `module_file`, `n_variables`. Sensitive modules (geo/GPS/coordinate/tracking) are filtered out and counted under `sensitive_modules_hidden` unless `ALLOW_SENSITIVE_MODULES=true`. |
 | `search_variables` | `(query, country?, round?, limit=30)` | Hits with `module_path`, `var_name`, `label`, value labels for top-5. Hits inside sensitive modules are filtered and counted under `n_sensitive_hidden`. |
+| `search_docs` | `(query, country?, round?, limit=6)` | BM25 ranking over 13,449 chunks from 266 reference PDFs. Returns `country`, `round`, `pdf`, `page`, `score`, `snippet`. Use to quote the actual survey question or codebook definition behind a variable. |
+| `list_crosswalks` | `(country)` | Names of curated concepts for that country (e.g. `household_id`, `years_of_schooling`). |
+| `lookup_crosswalk` | `(country, concept)` | Per-round `{module_path, variable, label, notes}` mapping from `crosswalks/<country>/<concept>.yaml`. |
 | `run_python` | `(code)` | `stdout`, `stderr`, truncation flags, `figures`, `error`, `worker_restarted`. Runs in a per-session subprocess; timeouts kill the worker via `proc.kill()` and the next call boots a fresh one. Output is capped (default 4,000 chars stdout, 2,000 chars stderr, 4 figures). `pd.read_parquet` is replaced by `load_module(country, round, module_path)` — the agent cannot bypass the data policy by reading parquet directly. |
 
 ## License

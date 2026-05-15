@@ -13,6 +13,8 @@ COUNTRY_DATA_DIR = Path(os.getenv("COUNTRY_DATA_DIR", REPO_ROOT / "Country Data"
 CATALOG_DIR = Path(os.getenv("CATALOG_DIR", REPO_ROOT / "catalog")).resolve()
 PARQUET_DIR = CATALOG_DIR / "parquet"
 VARIABLES_PARQUET = CATALOG_DIR / "variables.parquet"
+DOCS_PARQUET = CATALOG_DIR / "docs.parquet"
+CROSSWALKS_DIR = REPO_ROOT / "crosswalks"
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")

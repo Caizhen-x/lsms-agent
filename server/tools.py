@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from functools import lru_cache
 from typing import Any
 
 import pandas as pd
+from rank_bm25 import BM25Okapi
 
-from server.config import PARQUET_DIR, VARIABLES_PARQUET
+from server.config import DOCS_PARQUET, PARQUET_DIR, VARIABLES_PARQUET
+from server.crosswalks import list_concepts, load_crosswalk
 from server.data_policy import ALLOW_SENSITIVE_MODULES, sensitive_module_reason, visible_module
 from server.sandbox import PythonSandbox
 
@@ -85,6 +88,61 @@ TOOL_SCHEMAS: list[dict] = [
             "type": "object",
             "properties": {"code": {"type": "string", "description": "Python source to execute"}},
             "required": ["code"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "search_docs",
+        "description": (
+            "BM25 keyword search over the survey questionnaires, manuals, and codebook PDFs. "
+            "Use this to look up what a variable means, how a question was worded, value-code "
+            "definitions, or any other documentation context for a country / round. "
+            "Returns top-k passages with country, round, PDF, page, and a snippet."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search terms (e.g. 'fertilizer kg per hectare')"},
+                "country": {"type": "string"},
+                "round": {"type": "string"},
+                "limit": {"type": "integer", "default": 6, "minimum": 1, "maximum": 20},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_crosswalks",
+        "description": (
+            "List the available crosswalk concepts for a country — these are curated YAML files "
+            "mapping a concept (e.g. 'years_of_schooling', 'household_id') to the actual variable "
+            "names + modules in each round of that country.  Use BEFORE inventing a merge or "
+            "harmonization from scratch; an existing crosswalk saves a lot of guesswork."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "country": {"type": "string"},
+            },
+            "required": ["country"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "lookup_crosswalk",
+        "description": (
+            "Read a curated crosswalk YAML for one (country, concept).  Returns the per-round "
+            "variable/module mapping plus any notes from the author.  Returns an error if the "
+            "concept hasn't been crosswalked yet — in that case you can proceed by inferring "
+            "from search_variables, but flag the uncertainty to the user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "country": {"type": "string"},
+                "concept": {"type": "string"},
+            },
+            "required": ["country", "concept"],
             "additionalProperties": False,
         },
     },
@@ -194,6 +252,106 @@ def search_variables(query: str, country: str | None = None, round: str | None =
     }
 
 
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]+")
+
+
+def _tokenize(text: str) -> list[str]:
+    return [t.lower() for t in _TOKEN_RE.findall(text or "")]
+
+
+@lru_cache(maxsize=1)
+def _docs() -> pd.DataFrame | None:
+    if not DOCS_PARQUET.exists():
+        return None
+    df = pd.read_parquet(DOCS_PARQUET)
+    df["_tokens"] = df["text"].map(_tokenize)
+    return df
+
+
+@lru_cache(maxsize=8)
+def _bm25(country: str | None, round_: str | None) -> tuple[Any, pd.DataFrame] | None:
+    """Build a BM25 index over the (filtered) docs catalog.  Cached per filter."""
+    df = _docs()
+    if df is None or df.empty:
+        return None
+    sub = df
+    if country:
+        sub = sub[sub["country"] == country]
+    if round_:
+        sub = sub[sub["round"] == round_]
+    if sub.empty:
+        return None
+    sub = sub.reset_index(drop=True)
+    return BM25Okapi(sub["_tokens"].tolist()), sub
+
+
+def search_docs(query: str, country: str | None = None, round: str | None = None, limit: int = 6) -> dict:
+    _round_fn = __builtins__["round"] if isinstance(__builtins__, dict) else __builtins__.round  # we shadow `round` arg below
+    built = _bm25(country, round)
+    if built is None:
+        if not DOCS_PARQUET.exists():
+            return {
+                "hits": [],
+                "n_hits": 0,
+                "query": query,
+                "error": "no docs index built — run `make docs-index`",
+            }
+        return {"hits": [], "n_hits": 0, "query": query, "note": "no PDFs match this country/round filter"}
+    bm25, sub = built
+    tokens = _tokenize(query)
+    if not tokens:
+        return {"hits": [], "n_hits": 0, "query": query}
+    scores = bm25.get_scores(tokens)
+    # argsort descending, take top `limit`
+    import numpy as np
+
+    top = np.argsort(-scores)[:limit]
+    hits = []
+    for idx in top:
+        score = float(scores[idx])
+        if score <= 0:
+            continue
+        row = sub.iloc[int(idx)]
+        text = str(row["text"])
+        # Build a focused snippet: trim to ~600 chars around the first query-term match.
+        snippet = text
+        if len(snippet) > 600:
+            lowered = text.lower()
+            first = min((lowered.find(t) for t in tokens if t in lowered), default=0)
+            start = max(0, first - 100)
+            snippet = ("…" if start > 0 else "") + text[start:start + 600] + ("…" if start + 600 < len(text) else "")
+        hits.append({
+            "country": str(row["country"]),
+            "round": str(row["round"]),
+            "pdf": str(row["pdf_name"]),
+            "pdf_path": str(row["pdf_path"]),
+            "page": int(row["page"]),
+            "score": _round_fn(score, 2),
+            "snippet": snippet,
+        })
+    return {"hits": hits, "n_hits": len(hits), "query": query}
+
+
+def list_crosswalks_tool(country: str) -> dict:
+    concepts = list_concepts(country)
+    return {"country": country, "concepts": concepts, "n_concepts": len(concepts)}
+
+
+def lookup_crosswalk_tool(country: str, concept: str) -> dict:
+    data = load_crosswalk(country, concept)
+    if data is None:
+        available = list_concepts(country)
+        return {
+            "country": country,
+            "concept": concept,
+            "error": (
+                f"no crosswalk for ({country}, {concept}).  "
+                f"Available concepts for {country}: {available or 'none yet'}"
+            ),
+        }
+    return {"country": country, "concept": concept, "crosswalk": data}
+
+
 def run_python(code: str, sandbox: PythonSandbox) -> dict[str, Any]:
     res = sandbox.run(code)
     payload: dict[str, Any] = {
@@ -224,6 +382,12 @@ def dispatch(name: str, args: dict, sandbox: PythonSandbox) -> dict:
         return list_modules(**args)
     if name == "search_variables":
         return search_variables(**args)
+    if name == "search_docs":
+        return search_docs(**args)
+    if name == "list_crosswalks":
+        return list_crosswalks_tool(**args)
+    if name == "lookup_crosswalk":
+        return lookup_crosswalk_tool(**args)
     if name == "run_python":
         return run_python(args["code"], sandbox)
     return {"error": f"unknown tool: {name}"}

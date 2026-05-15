@@ -11,7 +11,10 @@ ingest:
 catalog:
 	$(PY) -m ingest.build_catalog
 
-all-ingest: ingest catalog
+docs-index:
+	$(PY) -m ingest.build_docs_index
+
+all-ingest: ingest catalog docs-index
 
 run:
 	chainlit run server/app.py -w --port 8000

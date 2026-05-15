@@ -33,15 +33,20 @@ RUN pip install --upgrade pip && pip install \
     "scipy==1.17.1" \
     "statsmodels==0.14.6" \
     "linearmodels==7.0" \
-    "pypdf==6.11.0"
+    "pypdf==6.11.0" \
+    "rank-bm25==0.2.2" \
+    "pyyaml==6.0.3"
 
 # Application code
 COPY server/ ./server/
 COPY ingest/ ./ingest/
 
-# Pre-built catalog (parquet + variables index).  This is what the agent serves.
-# Build it locally with `make all-ingest` before `docker build` / before pushing to HF.
+# Pre-built catalog (parquet, variables index, and docs index).  Built by
+# `make all-ingest` locally before deployment.
 COPY catalog/ ./catalog/
+
+# Curated crosswalks (small YAML files).  Read at runtime.
+COPY crosswalks/ ./crosswalks/
 
 # Hugging Face Spaces convention: app listens on $PORT (default 7860).
 # PYTHONPATH=/app makes `from server.foo import ...` resolve when Chainlit

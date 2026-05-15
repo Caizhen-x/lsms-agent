@@ -24,7 +24,9 @@ if _AUTH_SECRET:
     _cl_jwt.get_jwt_secret = lambda: _AUTH_SECRET  # type: ignore[assignment]
 
 from server.agent import AgentCallbacks, make_client, run_turn  # noqa: E402
+from server.audit import log_turn  # noqa: E402
 from server.config import GROUP_PASSWORD  # noqa: E402
+from server.rate_limit import rate_limiter  # noqa: E402
 from server.sandbox import PythonSandbox  # noqa: E402
 
 
@@ -79,11 +81,13 @@ async def on_stop() -> None:
 class ChainlitCallbacks(AgentCallbacks):
     def __init__(self) -> None:
         self.text_msg: cl.Message | None = None
+        self.tool_calls: list[str] = []  # accumulated for the audit log
 
     async def on_text(self, text: str) -> None:
         await cl.Message(content=text).send()
 
     async def on_tool_call(self, name: str, args: dict) -> None:
+        self.tool_calls.append(name)
         # Render the tool call as a collapsible step so users can audit but it doesn't dominate the chat.
         async with cl.Step(name=f"🛠 {name}", type="tool") as step:
             step.input = json.dumps(args, indent=2, ensure_ascii=False, default=str)
@@ -105,6 +109,15 @@ class ChainlitCallbacks(AgentCallbacks):
 
 @cl.on_message
 async def on_message(msg: cl.Message) -> None:
+    user = cl.user_session.get("user")
+    identifier = user.identifier if user is not None else "unknown"
+
+    allowed, why = rate_limiter.check_and_consume(identifier)
+    if not allowed:
+        await cl.Message(content=f"⏳ {why}").send()
+        log_turn(identifier, msg.content, ["__rate_limited__"])
+        return
+
     client = cl.user_session.get("client")
     sandbox = cl.user_session.get("sandbox")
     history = cl.user_session.get("history") or []
@@ -112,3 +125,4 @@ async def on_message(msg: cl.Message) -> None:
     cb = ChainlitCallbacks()
     new_history = await run_turn(client, history, msg.content, sandbox, cb)
     cl.user_session.set("history", new_history)
+    log_turn(identifier, msg.content, cb.tool_calls)

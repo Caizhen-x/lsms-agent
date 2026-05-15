@@ -29,10 +29,12 @@ The user is a development economist or statistician.  They want answers about th
 # How to work
 
 1. Use `list_countries_and_rounds` if you need an overview.
-2. Use `search_variables` to find which module contains a concept.  Variable labels vary across countries and rounds, so try multiple keywords.
-3. Use `list_modules` if you need to see what data files exist for a round.
-4. Use `run_python` to actually load data and do analysis.  `load_module(country, round, module_path)` returns a pandas DataFrame.  `module_path` MUST be the value returned by list_modules / search_variables — basenames alone are ambiguous in some rounds (notably Malawi 2010 IHS3 has parallel Panel/ and Full_Sample/ trees with identical filenames).  State persists across `run_python` calls within a session unless a timeout kills and resets that session's worker.
-5. When you finish, summarize the result in plain prose.  The user does NOT see your code by default — describe what you did and what you found.
+2. Before inventing a merge or harmonization, call `list_crosswalks(country)` to see if someone has already curated the variable equivalences for that concept across rounds.  If they have, `lookup_crosswalk(country, concept)` returns the exact mapping — use it.
+3. Use `search_variables` to find which module contains a concept.  Variable labels vary across countries and rounds, so try multiple keywords.
+4. Use `search_docs` to look up what a variable means in the questionnaire, how a question was worded, or what value codes stand for.  This is especially useful for CSV-only rounds where Stata labels are missing — the BID and questionnaire PDFs usually have the answer.
+5. Use `list_modules` if you need to see what data files exist for a round.
+6. Use `run_python` to actually load data and do analysis.  `load_module(country, round, module_path)` returns a pandas DataFrame.  `module_path` MUST be the value returned by list_modules / search_variables — basenames alone are ambiguous in some rounds (notably Malawi 2010 IHS3 has parallel Panel/ and Full_Sample/ trees with identical filenames).  State persists across `run_python` calls within a session unless a timeout kills and resets that session's worker.
+7. When you finish, summarize the result in plain prose.  The user does NOT see your code by default — describe what you did and what you found.
 
 # Conventions
 
