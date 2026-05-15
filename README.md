@@ -8,6 +8,13 @@ A natural-language analysis agent over **LSMS-ISA household survey data** for 8 
 
 ---
 
+## Using the live app
+
+1. Log into Hugging Face in the same browser with an account that the maintainer has added to the private Space.
+2. Open <https://xcz1234-lsms-agent.hf.space>. A Hugging Face 404 usually means the browser is not logged into an invited HF account, or the account has not been granted Space access yet.
+3. On the Chainlit login page, the **Email address** field is only the app's audit identifier. Use your real group email/name if possible, but it is not verified identity yet. The **Password** field is the shared group password.
+4. If sign-in appears stuck after a redeploy or secret rotation, hard-refresh the page or use an incognito window. Old Chainlit cookies are invalidated whenever `CHAINLIT_AUTH_SECRET` changes.
+
 ## Why it exists
 
 LSMS data is rich but painful to use. Every country names its variables differently. Every survey round restructures the modules. Questionnaires are scattered PDFs. Even *finding the right variable* before any analysis can eat an afternoon.
@@ -24,6 +31,7 @@ Built from raw World Bank LSMS-ISA downloads via `make all-ingest`:
 | Survey rounds | **30** |
 | Data modules (Stata + CSV) | **2,712** |
 | Variables indexed (with labels & value-labels where present) | **76,775** |
+| Reference PDF chunks indexed for `search_docs` | **13,449** chunks from **266** PDFs |
 | Parquet footprint at runtime | ~417 MB |
 
 Per-country round coverage:
@@ -80,9 +88,9 @@ The agent uses a subprocess Python sandbox with pandas / numpy / matplotlib / se
 
 Plots are rendered inline in the chat as PNGs.
 
-### Working without questionnaires (graceful degradation)
+### Working with weak labels or missing docs
 
-Several rounds shipped as **CSV-only** from the World Bank and have no Stata labels (e.g. Tanzania W3 onward, Nigeria GHS-Panel, Malawi IHS4). For those modules, the agent only has column names — it'll say so honestly, peek at the data, and use the agent's domain knowledge to make sense of it.
+Several rounds shipped as **CSV-only** from the World Bank and have no Stata labels (e.g. Tanzania W3 onward, Nigeria GHS-Panel, Malawi IHS4). For those modules, the agent may only have column names plus whatever `search_docs` can recover from the reference PDFs. If labels or docs are thin, it'll say so honestly, peek at the data, and flag uncertainty instead of pretending the variable meaning is fully documented.
 
 ## How it works under the hood
 
@@ -135,6 +143,7 @@ Several rounds shipped as **CSV-only** from the World Bank and have no Stata lab
 - Fail-closed: if `GROUP_PASSWORD` is unset at boot, the app refuses to start (no accidental open-door).
 - Sandbox: each chat session gets a subprocess worker, and timed-out code is killed with `proc.kill()`. `run_python` output is capped, and geovariable/GPS/coordinate/tracking modules are hidden and blocked unless `ALLOW_SENSITIVE_MODULES=true`.
 - **Trust model**: this is for a known internal research group. The sandbox has guardrails, but it is not a hostile-user containment boundary. If the HF Space is public, files committed to the Space repo can still be downloaded directly from Hugging Face, bypassing app login.
+- **Data boundary**: the public GitHub source repo excludes `catalog/` and raw `Country Data/`. The private HF Space repo/image contains the runtime parquet catalog, including `catalog/docs.parquet`, so Space visibility is the real access control for deployed data files.
 
 ## Setup (self-hosters)
 
